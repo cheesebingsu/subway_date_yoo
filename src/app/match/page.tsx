@@ -66,7 +66,7 @@ export default function MatchPage() {
         
       if (!bs?.is_boarding) {
         toast.error("지하철 탑승 중에만 이용할 수 있습니다.");
-        router.push('/home');
+        router.push('/');
         return;
       }
 

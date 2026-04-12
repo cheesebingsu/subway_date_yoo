@@ -34,9 +34,9 @@ export async function updateSession(request: NextRequest) {
   } = await supabase.auth.getUser()
 
   // 보호되어야 할 경로 정의
-  const protectedRoutes = ['/home', '/onboarding', '/match', '/chat', '/requests']
+  const protectedRoutes = ['/', '/onboarding', '/match', '/chat', '/requests']
   const isProtectedRoute = protectedRoutes.some((route) => 
-    request.nextUrl.pathname.startsWith(route)
+    route === '/' ? request.nextUrl.pathname === '/' : request.nextUrl.pathname.startsWith(route)
   )
 
   if (isProtectedRoute && !user) {
@@ -45,11 +45,10 @@ export async function updateSession(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
-  // 인증된 사용자가 인증 페이지에 접근하려 할 때 
-  // (임시적으로 /home으로 리스트림. 콜백 등에서 profile을 확인할 것이므로 기본값은 /home 처리)
+  // 인증된 사용자가 인증 페이지에 접근하려 할 때 홈으로 리다이렉트
   if (request.nextUrl.pathname === '/auth' && user) {
      const url = request.nextUrl.clone()
-     url.pathname = '/home'
+     url.pathname = '/'
      return NextResponse.redirect(url)
   }
 

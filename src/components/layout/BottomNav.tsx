@@ -11,7 +11,7 @@ export function BottomNav() {
   const pathname = usePathname();
 
   const navItems = [
-    { name: "홈", path: "/home", icon: HomeIcon },
+    { name: "홈", path: "/", icon: HomeIcon },
     { name: "진행중", path: "/match", icon: MatchIcon },
     { name: "채팅", path: "/chat", icon: ChatIcon, showBadge: true },
     { name: "프로필", path: "/profile", icon: ProfileIcon },
@@ -52,7 +52,7 @@ export function BottomNav() {
     <nav className="absolute bottom-0 w-full max-w-[430px] bg-white border-t border-border-default h-[68px] pb-safe z-50">
       <div className="flex h-full px-2">
         {navItems.map((item) => {
-          const isActive = pathname.startsWith(item.path);
+          const isActive = item.path === "/" ? pathname === "/" : pathname.startsWith(item.path);
           const Icon = item.icon;
           return (
             <Link

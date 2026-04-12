@@ -112,7 +112,7 @@ export default function OnboardingPage() {
 
       if (error) throw error;
       
-      router.push('/home');
+      router.push('/');
     } catch (err: any) {
       toast.error(err.message || "오류가 발생했습니다.");
       setIsSubmitting(false);

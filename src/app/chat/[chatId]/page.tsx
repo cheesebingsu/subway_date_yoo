@@ -44,7 +44,7 @@ export default function ChatRoomPage() {
 
       // fetch chat info
       const { data: chat } = await supabase.from("chats").select("*").eq("id", chatId).single();
-      if (!chat) return router.push("/home");
+      if (!chat) return router.push("/");
       
       const opponentId = chat.user_a === user.id ? chat.user_b : chat.user_a;
       

@@ -32,7 +32,7 @@ export async function GET(request: Request) {
         .single()
         
       if (profile && profile.nickname) {
-        return NextResponse.redirect(`${origin}/home`)
+        return NextResponse.redirect(`${origin}/`)
       } else {
         return NextResponse.redirect(`${origin}/onboarding`)
       }

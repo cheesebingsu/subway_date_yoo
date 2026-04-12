@@ -1,208 +1,200 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { supabase } from "@/lib/supabase";
-import { Button } from "@/components/ui/Button";
-import { Card } from "@/components/ui/Card";
+import { BottomNav } from "@/components/layout/BottomNav";
 import { TicketIcon } from "@/components/ui/TicketIcon";
+import { useRouter } from "next/navigation";
+import { cn } from "@/lib/utils";
 
-const fadeInUp = {
-  hidden: { opacity: 0, y: 30 },
-  visible: { opacity: 1, y: 0, transition: { duration: 0.6 } },
-};
+const lines = [
+  { id: "1호선", color: "bg-[#0052A4]" },
+  { id: "2호선", color: "bg-[#009D3E]" },
+  { id: "3호선", color: "bg-[#EF7C1C]" },
+  { id: "4호선", color: "bg-[#00A5DE]" },
+  { id: "5호선", color: "bg-[#996CAC]" },
+  { id: "6호선", color: "bg-[#CD7C2F]" },
+  { id: "7호선", color: "bg-[#747F00]" },
+  { id: "8호선", color: "bg-[#E6186C]" },
+  { id: "9호선", color: "bg-[#BDB092]" },
+  { id: "신분당", color: "bg-[#D4003B]" },
+];
 
-export default function LandingPage() {
-  const [count, setCount] = useState<number>(0);
-  const [email, setEmail] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
+export default function HomePage() {
+  const supabase = createClient();
+  const router = useRouter();
+  
+  const [ticketCount, setTicketCount] = useState<number>(0);
+  const [isWaitingSubway, setIsWaitingSubway] = useState<boolean>(false);
+  const [selectedLine, setSelectedLine] = useState<string>("2호선");
+  const [totalBoardingCount, setTotalBoardingCount] = useState<number>(0);
+  const [isLoading, setIsLoading] = useState(true);
 
+  // Fetch initial data
   useEffect(() => {
-    async function fetchCount() {
-      const { count: fetchedCount, error } = await supabase
-        .from("waitlist")
-        .select("*", { count: "exact", head: true });
-
-      if (!error && fetchedCount !== null) {
-        setCount(fetchedCount);
+    async function loadData() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        router.push('/auth');
+        return;
       }
+
+      // Fetch tickets
+      const { data: tickets } = await supabase
+        .from('tickets')
+        .select('amount')
+        .eq('user_id', user.id)
+        .single();
+      if (tickets) setTicketCount(tickets.amount);
+
+      // Fetch personal boarding status
+      const { data: boarding } = await supabase
+        .from('boarding_status')
+        .select('is_boarding, line')
+        .eq('user_id', user.id)
+        .order('boarded_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (boarding && boarding.is_boarding) {
+        setSelectedLine(boarding.line);
+      }
+
+      // Initial total boarding count (today)
+      const today = new Date().toISOString().split("T")[0];
+      const { count } = await supabase
+        .from('boarding_status')
+        .select('*', { count: 'exact', head: true })
+        .gte('boarded_at', `${today}T00:00:00.000Z`);
+        
+      setTotalBoardingCount(count || 0);
+      setIsLoading(false);
     }
-    fetchCount();
-  }, []);
+    loadData();
+  }, [supabase, router]);
 
-  const handleRegister = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!email) return;
-    setIsSubmitting(true);
+  // Realtime subscription for total boarding count
+  useEffect(() => {
+    const channel = supabase.channel('boarding-count')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'boarding_status' }, () => {
+        // Re-fetch today count when new boarding starts
+        const today = new Date().toISOString().split("T")[0];
+        supabase.from('boarding_status').select('*', { count: 'exact', head: true }).gte('boarded_at', `${today}T00:00:00.000Z`)
+          .then(({ count }) => setTotalBoardingCount(count || 0));
+      })
+      .subscribe();
+      
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [supabase]);
 
-    const { error } = await supabase.from("waitlist").insert([{ email }]);
+  const handleBoardToggle = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    // 로딩 화면 전환
+    setIsWaitingSubway(true);
+
+    // 하차 상태 모두 탑승 종료 처리 후 새로 탑승
+    await supabase.from('boarding_status').update({ is_boarding: false, alighted_at: new Date().toISOString() }).eq('user_id', user.id).eq('is_boarding', true);
+
+    const { error } = await supabase
+      .from('boarding_status')
+      .insert({
+        user_id: user.id,
+        is_boarding: true,
+        line: selectedLine, // 기본값 2호선
+        boarded_at: new Date().toISOString()
+      });
 
     if (error) {
-      if (error.code === "23505") {
-        toast.error("이미 사전예약된 이메일이에요.");
-      } else {
-        toast.error("오류가 발생했어요. 다시 시도해주세요.");
-      }
-    } else {
-      toast.success("탑승 예약이 완료되었습니다! 🎫", {
-        description: "앱 출시 시 가장 먼저 알려드릴게요.",
-      });
-      setCount((c) => c + 1);
-      setEmail("");
+      toast.error("탑승 처리에 실패했습니다.");
+      setIsWaitingSubway(false);
+      return;
     }
-    setIsSubmitting(false);
+
+    // 3초 대기 후 매칭 화면으로 이동
+    setTimeout(() => {
+      router.push('/match');
+    }, 3000);
   };
 
-  const scrollToBottom = () => {
-    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" });
-  };
+  if (isLoading) return <div className="min-h-screen bg-base" />;
 
   return (
-    <main className="flex flex-col w-full h-full pb-10">
-      {/* Section 1 — Hero */}
-      <section className="flex flex-col items-center justify-center min-h-[85vh] px-6 text-center bg-gradient-to-b from-primary-light to-base">
-        <motion.div initial="hidden" animate="visible" variants={fadeInUp} className="space-y-6 mt-10">
-          <h1 className="text-[28px] md:text-[32px] font-bold text-text-primary leading-[1.4]">
-            지금 이 지하철 안,<br />
-            나와 꽤 잘 통하는 누군가가<br />
-            타고 있을지도 몰라요.
-          </h1>
-          <p className="text-[16px] text-text-secondary">
-            어차피 타는 지하철. 조금만 설레어 볼까요?
-          </p>
-
-          <div className="pt-8 space-y-3 flex flex-col items-center">
-            <Button size="lg" className="w-full max-w-xs shadow-sm" onClick={scrollToBottom}>
-              사전예약하고 무료 티켓 10장 받기
-            </Button>
-            <p className="text-[13px] text-text-muted mt-2">
-              벌써 <span className="text-primary font-semibold">{count}명</span>이 사전예약했어요
-            </p>
-          </div>
-        </motion.div>
-      </section>
-
-      {/* Section 2 — How It Works (3 cards) */}
-      <motion.section 
-        className="px-6 py-16 space-y-8"
-        initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-50px" }} variants={fadeInUp}
-      >
-        <div className="space-y-4">
-          <Card className="flex flex-col gap-2 relative overflow-hidden group">
-            <div className="absolute top-0 left-0 w-1 h-full bg-primary" />
-            <span className="text-primary font-bold text-sm">POINT 1</span>
-            <h3 className="text-[20px] font-semibold text-text-primary">탈 때만 열려요</h3>
-            <p className="text-[16px] text-text-secondary leading-relaxed">
-              채팅은 오직 지하철에 타고 있을 때만 가능해요.<br/>
-              내리면 자연스럽게 대화가 종료됩니다.
-            </p>
-          </Card>
-
-          <Card className="flex flex-col gap-2 relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-1 h-full bg-ticket" />
-            <span className="text-ticket font-bold text-sm">POINT 2</span>
-            <h3 className="text-[20px] font-semibold text-text-primary">얼굴 대신 퀴즈로 만나요</h3>
-            <p className="text-[16px] text-text-secondary leading-relaxed">
-              외모 평가 없이, 지하철 관련 A/B 퀴즈 5개로<br/>
-              서로의 취향과 관심사를 알아봐요.
-            </p>
-          </Card>
-
-          <Card className="flex flex-col gap-2 relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-1 h-full bg-success" />
-            <span className="text-success font-bold text-sm">POINT 3</span>
-            <h3 className="text-[20px] font-semibold text-text-primary">부담 없이 무료로 시작</h3>
-            <p className="text-[16px] text-text-secondary leading-relaxed">
-              매일 2장의 무료 티켓이 제공돼요.<br/>
-              가벼운 마음으로 앱을 열어보세요.
-            </p>
-          </Card>
+    <div className="relative flex flex-col h-screen bg-base">
+      {/* Header */}
+      <header className="flex items-center justify-between px-6 py-4 bg-white/70 backdrop-blur-md z-40">
+        <h1 className="text-xl font-bold bg-gradient-to-r from-primary to-primary-dark bg-clip-text text-transparent">
+          설레철
+        </h1>
+        <div className="flex items-center gap-2 bg-surface px-3 py-1.5 rounded-full font-bold text-text-primary border border-border-default">
+          <TicketIcon className="w-5 h-5 text-primary" />
+          <span>{ticketCount}</span>
         </div>
-      </motion.section>
+      </header>
 
-      {/* Section 3 — Usage Flow */}
-      <motion.section 
-        className="px-6 py-16 bg-surface space-y-8"
-        initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-50px" }} variants={fadeInUp}
-      >
-        <h2 className="text-[24px] font-bold text-text-primary mb-8 text-center">
-          이렇게 이용해요
-        </h2>
+      {/* Main Area */}
+      <main className="flex-1 flex flex-col items-center justify-center -mt-10 overflow-y-auto pb-24">
         
-        <div className="space-y-6">
-          <div className="flex gap-4 items-start">
-            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary-light text-primary flex items-center justify-center font-bold">1</div>
-            <div>
-              <h4 className="text-[18px] font-semibold text-text-primary">탑승 버튼 누르기</h4>
-              <p className="text-text-secondary text-[15px] mt-1">지하철에 타면 설레철의 탑승 버튼을 눌러요.</p>
+        {isWaitingSubway ? (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center justify-center w-full h-full space-y-8">
+            <div className="relative flex items-center justify-center w-48 h-48">
+              <motion.div animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0, 0.5] }} transition={{ duration: 1.5, repeat: Infinity, ease: "easeInOut" }} className="absolute w-full h-full rounded-full bg-primary/20 pointer-events-none" />
+              <div className="w-32 h-32 rounded-full bg-gradient-to-tr from-primary to-primary-light flex flex-col items-center justify-center text-white shadow-xl">
+                <span className="text-4xl mb-1">🚇</span>
+              </div>
             </div>
-          </div>
-          <div className="flex gap-4 items-start">
-            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary-light text-primary flex items-center justify-center font-bold">2</div>
-            <div>
-              <h4 className="text-[18px] font-semibold text-text-primary">오늘의 후보 3명 만나기</h4>
-              <p className="text-text-secondary text-[15px] mt-1">나와 비슷한 취향의 사람들을 추천해드려요.</p>
+            <div className="text-center">
+               <h2 className="text-2xl font-extrabold text-text-primary animate-pulse">지하철 기다리는 중...</h2>
+               <p className="text-text-secondary font-semibold mt-2">나의 운명을 만날 준비를 하고 있어요</p>
             </div>
-          </div>
-          <div className="flex gap-4 items-start">
-            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary-light text-primary flex items-center justify-center font-bold">3</div>
-            <div>
-              <h4 className="text-[18px] font-semibold text-text-primary">마음에 들면 호감 보내기</h4>
-              <p className="text-text-secondary text-[15px] mt-1">티켓 1장을 사용해 인사를 건네볼 수 있어요.</p>
-            </div>
-          </div>
-          <div className="flex gap-4 items-start">
-            <div className="flex-shrink-0 w-8 h-8 rounded-full bg-primary flex items-center justify-center text-white">
-              <TicketIcon className="w-4 h-4 text-white" />
-            </div>
-            <div>
-              <h4 className="text-[18px] font-semibold text-text-primary">잘 맞으면 카톡 교환</h4>
-              <p className="text-text-secondary text-[15px] mt-1">티켓 2장을 사용해 진짜 인연을 이어가세요!</p>
-            </div>
-          </div>
-        </div>
-      </motion.section>
+          </motion.div>
+        ) : (
+          <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center w-full space-y-10">
+            
+            {/* Inactive Big Button */}
+            <button onClick={handleBoardToggle} className="group relative flex items-center justify-center w-56 h-56 transition-transform active:scale-95 z-10 mt-6">
+              <div className="absolute w-full h-full rounded-full border-4 border-dashed border-primary/40 animate-[spin_10s_linear_infinite]" />
+              <div className="w-44 h-44 rounded-full bg-white shadow-xl flex flex-col items-center justify-center text-primary border-2 border-border-default group-hover:border-primary transition-colors">
+                <span className="text-5xl mb-2 grayscale opacity-80 group-hover:grayscale-0 group-hover:opacity-100 transition-all">🚇</span>
+                <span className="font-extrabold text-[17px]">탑승 시작하기</span>
+              </div>
+            </button>
 
-      {/* Section 4 — Pre-registration Form */}
-      <motion.section 
-        className="px-6 py-20 text-center"
-        initial="hidden" whileInView="visible" viewport={{ once: true, margin: "-50px" }} variants={fadeInUp}
-      >
-        <div className="bg-primary-light/50 p-6 rounded-[24px] border border-primary-light">
-          <TicketIcon className="mx-auto w-10 h-10 mb-4" />
-          <h2 className="text-[22px] font-bold text-text-primary mb-2">
-            사전예약하고 티켓 10장 받기
-          </h2>
-          <p className="text-text-secondary text-[15px] mb-8">
-            정식 출시 후 알림 이메일과 선물을 보내드려요.
-          </p>
+            {/* Live Count */}
+            <div className="flex flex-col items-center bg-white border border-border-default px-6 py-4 rounded-2xl shadow-[0_2px_10px_rgba(0,0,0,0.03)] mt-8">
+              <span className="text-sm font-semibold text-text-secondary mb-1">오늘 하루, 대중교통 안에서</span>
+              <div className="flex items-center gap-2">
+                <span className="relative flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                </span>
+                <p className="text-lg font-bold text-text-primary">
+                  <span className="text-primary text-xl font-extrabold mr-1">{totalBoardingCount}</span>명이 설레는 중
+                </p>
+              </div>
+            </div>
 
-          <form onSubmit={handleRegister} className="flex flex-col gap-3 max-w-xs mx-auto">
-            <input
-              type="email"
-              placeholder="이메일을 입력해주세요"
-              required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              className="px-4 py-3 rounded-xl border border-border-default focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent text-text-primary bg-white text-base"
-            />
-            <Button type="submit" size="lg" isLoading={isSubmitting}>
-              미리 탑승하기
-            </Button>
-          </form>
-        </div>
-      </motion.section>
+          </motion.div>
+        )}
 
-      {/* Section 5 — Footer */}
-      <footer className="mt-10 mb-4 text-center space-y-4 text-text-muted text-[13px]">
-        <p className="font-semibold text-text-secondary text-[15px]">설레철 (Seullecheol)</p>
-        <div className="flex justify-center gap-4">
-          <a href="#" className="hover:text-text-secondary transition-colors">이용약관</a>
-          <a href="#" className="hover:text-text-secondary transition-colors">개인정보처리방침</a>
-        </div>
-        <p>Built by a solo developer</p>
-      </footer>
-    </main>
+      </main>
+
+      {/* Bottom Navigation */}
+      <BottomNav />
+      {/* 
+        Tailwind class for hide-scrollbar (requires custom css if not built-in, 
+        fallback applied via tailwind utilities inside global css usually.
+        We'll just add inline style below or let browser default if scrollbar shows slightly 
+      */}
+      <style dangerouslySetInnerHTML={{__html: `
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      `}} />
+    </div>
   );
 }
