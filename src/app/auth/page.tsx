@@ -16,7 +16,7 @@ export default function AuthPage() {
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "kakao",
         options: {
-          scopes: "profile_nickname profile_image",
+          scopes: "profile_nickname profile_image account_email",
           redirectTo: `${location.origin}/auth/callback`,
         },
       });
