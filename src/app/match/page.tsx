@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
@@ -23,11 +23,18 @@ type MatchProfile = {
   line?: string;
 };
 
-// 시간대 양식 재활용
+// 시간대 양식
 const timeSlots = {
   "아침 (Morning)": ["07:00~07:59", "08:00~08:59", "09:00~09:59", "10:00~10:59", "11:00~11:59"],
   "오후 (Afternoon)": ["12:00~12:59", "13:00~13:59", "14:00~14:59", "15:00~15:59", "16:00~16:59"],
   "저녁 (Evening)": ["17:00~17:59", "18:00~18:59", "19:00~19:59", "20:00~20:59"]
+};
+
+// 타이머 포맷
+const formatTime = (seconds: number) => {
+  const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+  const s = (seconds % 60).toString().padStart(2, '0');
+  return `${m}:${s}`;
 };
 
 export default function MatchPage() {
@@ -36,16 +43,43 @@ export default function MatchPage() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [myProfile, setMyProfile] = useState<any>(null);
   
-  const [matches, setMatches] = useState<MatchProfile[]>([]);
+  // 실시간 매칭 상태
+  const [realtimeMatches, setRealtimeMatches] = useState<MatchProfile[]>([]);
+  const [timeLeft, setTimeLeft] = useState<number>(300);
+  const [isSearching, setIsSearching] = useState<boolean>(true);
+  
+  // 오늘의 탑승자
+  const [todayMatches, setTodayMatches] = useState<MatchProfile[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   
-  // BottomSheet State
+  // BottomSheet 상태
   const [selectedTarget, setSelectedTarget] = useState<MatchProfile | null>(null);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [selectedDates, setSelectedDates] = useState<string[]>([]);
   const [selectedTimes, setSelectedTimes] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // ref로 최신 상태 추적 (이벤트 콜백 내에서 stale closure 방지)
+  const realtimeMatchesRef = useRef(realtimeMatches);
+  const todayMatchesRef = useRef(todayMatches);
+  const isSearchingRef = useRef(isSearching);
+  const myProfileRef = useRef(myProfile);
+
+  useEffect(() => { realtimeMatchesRef.current = realtimeMatches; }, [realtimeMatches]);
+  useEffect(() => { todayMatchesRef.current = todayMatches; }, [todayMatches]);
+  useEffect(() => { isSearchingRef.current = isSearching; }, [isSearching]);
+  useEffect(() => { myProfileRef.current = myProfile; }, [myProfile]);
+
+  // 알림 권한 요청
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      if (Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+    }
+  }, []);
+
+  // 초기 데이터 로드
   useEffect(() => {
     async function loadMatches() {
       const { data: { user } } = await supabase.auth.getUser();
@@ -55,33 +89,50 @@ export default function MatchPage() {
       }
       setCurrentUser(user);
 
-      // 본인 탑승 여부 확인
+      // 탑승 여부 확인
       const { data: bs } = await supabase
         .from('boarding_status')
-        .select('is_boarding')
+        .select('is_boarding, matching_started_at')
         .eq('user_id', user.id)
         .order('boarded_at', { ascending: false })
         .limit(1)
         .single();
         
       if (!bs?.is_boarding) {
-        toast.error("지하철 탑승 중에만 이용할 수 있습니다.");
+        toast.error("탑승 기다리기를 먼저 눌러주세요.");
         router.push('/');
         return;
       }
 
-      // 내 프로필 (나이 필터 등)
+      // 타이머 복원 (이전 세션에서 돌아온 경우)
+      if (bs.matching_started_at) {
+        const elapsed = Math.floor(
+          (Date.now() - new Date(bs.matching_started_at).getTime()) / 1000
+        );
+        const remaining = 300 - elapsed;
+        if (remaining > 0) {
+          setTimeLeft(remaining);
+          setIsSearching(true);
+        } else {
+          setTimeLeft(0);
+          setIsSearching(false);
+        }
+      }
+
+      // 내 프로필
       const { data: profile } = await supabase.from('profiles').select('*').eq('id', user.id).single();
       setMyProfile(profile);
 
-      // RPC로 매칭 후보 가져오기
-      fetchCandidates(user.id, profile?.preferred_age_min || 18, profile?.preferred_age_max || 45);
+      // 오늘의 탑승자 (RPC)
+      await fetchTodayMatches(user.id, profile?.preferred_age_min || 18, profile?.preferred_age_max || 45);
+
+      setIsLoading(false);
     }
     loadMatches();
   }, [supabase, router]);
 
-  const fetchCandidates = async (userId: string, minAge: number, maxAge: number) => {
-    setIsLoading(true);
+  // 오늘의 탑승자 가져오기
+  const fetchTodayMatches = async (userId: string, minAge: number, maxAge: number) => {
     try {
       const { data: rpcData, error } = await supabase.rpc('get_match_candidates', {
         caller_id: userId,
@@ -92,18 +143,116 @@ export default function MatchPage() {
       if (error) {
         console.error('RPC error:', error);
         toast.error("매칭 후보를 불러오는 데 실패했습니다.");
-        setMatches([]);
+        setTodayMatches([]);
       } else {
-        setMatches((rpcData || []) as MatchProfile[]);
+        setTodayMatches((rpcData || []) as MatchProfile[]);
       }
     } catch (err) {
       console.error('Match fetch error:', err);
-      toast.error("서버 연결에 문제가 있어요. 잠시 후 다시 시도해주세요.");
-      setMatches([]);
+      setTodayMatches([]);
     }
-    setIsLoading(false);
   };
 
+  // 5분 카운트다운 타이머
+  useEffect(() => {
+    if (!isSearching) return;
+    if (timeLeft <= 0) {
+      setIsSearching(false);
+      return;
+    }
+    const interval = setInterval(() => {
+      setTimeLeft(prev => {
+        if (prev <= 1) {
+          setIsSearching(false);
+          clearInterval(interval);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isSearching, timeLeft]);
+
+  // 실시간 매칭 구독 (Supabase Realtime)
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const channel = supabase
+      .channel('realtime-matching')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'boarding_status'
+        },
+        async (payload) => {
+          const newRecord = payload.new as any;
+
+          // 자기 자신 무시
+          if (newRecord.user_id === currentUser.id) return;
+
+          // matching_started_at이 없으면 무시
+          if (!newRecord.matching_started_at) return;
+
+          // 검색 중이 아니면 무시
+          if (!isSearchingRef.current) return;
+
+          // 이미 3명이면 무시
+          if (realtimeMatchesRef.current.length >= 3) return;
+
+          // 이미 보여주고 있는 유저인지 확인
+          const alreadyShown = [
+            ...realtimeMatchesRef.current.map(m => m.id),
+            ...todayMatchesRef.current.map(m => m.id)
+          ];
+          if (alreadyShown.includes(newRecord.user_id)) return;
+
+          // 프로필 조회
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('id, nickname, age, mbti, bio, quiz_answers, regular_boarding_times')
+            .eq('id', newRecord.user_id)
+            .single();
+
+          if (!profile || !profile.nickname) return;
+
+          // 나이 필터
+          const mp = myProfileRef.current;
+          if (mp?.preferred_age_min && profile.age < mp.preferred_age_min) return;
+          if (mp?.preferred_age_max && profile.age > mp.preferred_age_max) return;
+
+          const newMatch: MatchProfile = {
+            ...profile,
+            is_boarding: true,
+            line: ''
+          };
+
+          // 브라우저 알림 (백그라운드일 때)
+          if (typeof window !== 'undefined' && 'Notification' in window &&
+              Notification.permission === 'granted' && document.hidden) {
+            new Notification('설레철 🚇', {
+              body: `${profile.nickname}님이 지금 탑승 기다리기를 눌렀어요!`,
+            });
+          }
+
+          setRealtimeMatches(prev => {
+            const updated = [...prev, newMatch];
+            if (updated.length >= 3) {
+              setIsSearching(false);
+            }
+            return updated;
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [currentUser, supabase]);
+
+  // 새로고침
   const handleRefresh = async () => {
     if (!myProfile) return;
     const safeRefreshCount = myProfile.refresh_count ?? 0;
@@ -112,14 +261,14 @@ export default function MatchPage() {
       return;
     }
     
-    // Refresh 카운트 증가
     await supabase.from('profiles').update({ refresh_count: safeRefreshCount + 1 }).eq('id', currentUser.id);
     setMyProfile({ ...myProfile, refresh_count: safeRefreshCount + 1 });
     
     toast.success(`새로운 운명을 찾습니다! (남은 횟수: ${2 - safeRefreshCount}회)`);
-    fetchCandidates(currentUser.id, myProfile.preferred_age_min || 18, myProfile.preferred_age_max || 45);
+    fetchTodayMatches(currentUser.id, myProfile.preferred_age_min || 18, myProfile.preferred_age_max || 45);
   };
 
+  // 인사 건네기 클릭
   const handleActionClick = (target: MatchProfile) => {
     setSelectedTarget(target);
     setSelectedDates([]);
@@ -127,12 +276,13 @@ export default function MatchPage() {
     setIsSheetOpen(true);
   };
 
+  // 요청 전송
   const submitRequest = async () => {
     if (!selectedTarget || !currentUser) return;
     setIsSubmitting(true);
 
     try {
-      // 티켓 보유량만 검사 (차감은 수락 시 진행된다는 기획)
+      // 티켓 확인
       const { data: t } = await supabase.from('tickets').select('amount').eq('user_id', currentUser.id).single();
       if (!t || t.amount < 1) {
         toast.error("잔여 티켓이 부족합니다.");
@@ -140,7 +290,7 @@ export default function MatchPage() {
         return;
       }
 
-      // 대상이 탑승 중이 아닐 때 스케줄 데이터 첨부
+      // 스케줄 데이터
       let scheduleOptions = null;
       if (!selectedTarget.is_boarding) {
         if (selectedDates.length === 0 || selectedTimes.length === 0) {
@@ -171,7 +321,8 @@ export default function MatchPage() {
       setIsSheetOpen(false);
       
       // 목록에서 제외
-      setMatches(prev => prev.filter(m => m.id !== selectedTarget.id));
+      setRealtimeMatches(prev => prev.filter(m => m.id !== selectedTarget.id));
+      setTodayMatches(prev => prev.filter(m => m.id !== selectedTarget.id));
     } catch (err) {
       toast.error("요청 전송 중 오류가 발생했습니다.");
     }
@@ -180,9 +331,76 @@ export default function MatchPage() {
 
   if (isLoading) return <div className="min-h-screen bg-base flex items-center justify-center">탐색 중... 📡</div>;
 
+  // 매칭 카드 렌더 함수 (재사용)
+  const renderMatchCard = (profile: MatchProfile, isRealtime: boolean = false) => (
+    <motion.div
+      key={profile.id}
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4 }}
+    >
+      <Card className={cn(
+        "overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.06)] bg-white",
+        isRealtime ? "border-l-4 border-green-400 border-t border-r border-b border-border-default/50" : "border border-border-default/50"
+      )}>
+        <div className="p-5 space-y-4">
+          {/* 헤더 */}
+          <div className="flex items-center justify-between">
+            {isRealtime ? (
+              <span className="px-3 py-1 bg-green-100 text-green-700 text-xs font-black rounded-full animate-pulse border border-green-200">
+                🟢 방금 탑승했어요
+              </span>
+            ) : profile.is_boarding ? (
+              <span className="px-3 py-1 bg-green-100 text-green-700 text-xs font-black rounded-full border border-green-200">
+                🟢 탑승 중
+              </span>
+            ) : (
+              <span className="px-3 py-1 bg-surface text-text-secondary text-xs font-bold rounded-full border border-border-default">
+                🎫 오늘 탑승 이력 있음
+              </span>
+            )}
+            <span className="px-2.5 py-1 bg-primary/10 text-primary-dark font-black text-xs rounded-lg">
+              {profile.mbti || "MBTI 미상"}
+            </span>
+          </div>
+
+          {/* 정보 */}
+          <div>
+            <h2 className="text-xl font-extrabold text-text-primary mb-1">
+              {profile.nickname} <span className="font-medium text-text-muted text-base ml-1">{profile.age}세</span>
+            </h2>
+            <p className="text-sm font-medium text-text-secondary bg-surface p-3 rounded-xl">
+              &quot;{profile.bio || "앗, 소개글을 적지 않은 분이에요!"}&quot;
+            </p>
+          </div>
+
+          {/* 서브 정보 */}
+          <div className="space-y-2 pt-2 border-t border-border-default">
+            <div className="text-xs font-semibold text-text-muted">탑승 루틴</div>
+            <div className="text-[13px] font-medium text-text-secondary">
+              {profile.regular_boarding_times && Array.isArray(profile.regular_boarding_times) && profile.regular_boarding_times.length > 0
+                ? profile.regular_boarding_times.slice(0, 3).join(", ") + (profile.regular_boarding_times.length > 3 ? " 외" : "")
+                : "🕰️ 유동적인 스케줄의 소유자"}
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <Button 
+              onClick={() => handleActionClick(profile)} 
+              variant={profile.is_boarding || isRealtime ? "primary" : "outline"} 
+              className="w-full font-bold shadow-md h-12 text-[15px]"
+            >
+              {profile.is_boarding || isRealtime ? "말 걸어보기 🎫" : "만남 스케줄 조율하기"}
+            </Button>
+          </div>
+        </div>
+      </Card>
+    </motion.div>
+  );
+
   return (
     <div className="relative flex flex-col h-screen bg-base overflow-hidden">
-      {/* Header */}
+      {/* 헤더 */}
       <header className="flex items-center justify-between px-6 py-4 bg-white/70 backdrop-blur-md z-30 shadow-sm">
         <h1 className="text-xl font-bold bg-gradient-to-r from-primary to-primary-dark bg-clip-text text-transparent">
           오늘의 설렘 후보
@@ -195,76 +413,95 @@ export default function MatchPage() {
         </button>
       </header>
 
-      {/* Main Content */}
+      {/* 메인 콘텐츠 */}
       <main className="flex-1 overflow-y-auto px-5 py-6 pb-28 space-y-6">
-        {matches.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center space-y-4 opacity-70 mt-20">
-            <span className="text-6xl">🕳️</span>
-            <div>
-              <p className="font-bold text-lg text-text-primary">아직 같은 열차나 시간대에</p>
-              <p className="font-bold text-lg text-text-primary">탑승한 인연이 없네요.</p>
-            </div>
-            <p className="text-sm text-text-muted">조금 뒤에 다시 새로고침을 돌려보세요!</p>
-          </div>
-        ) : (
-          matches.map(profile => (
-            <Card key={profile.id} className="overflow-hidden shadow-[0_4px_20px_rgba(0,0,0,0.06)] border border-border-default/50 bg-white">
-              <div className="p-5 space-y-4">
-                {/* Headers */}
-                <div className="flex items-center justify-between">
-                  {profile.is_boarding ? (
-                    <span className="px-3 py-1 bg-green-100 text-green-700 text-xs font-black rounded-full animate-pulse border border-green-200">
-                      🟢 탑승 중
-                    </span>
-                  ) : (
-                    <span className="px-3 py-1 bg-surface text-text-secondary text-xs font-bold rounded-full border border-border-default">
-                      🎫 오늘 탑승 이력 있음
-                    </span>
-                  )}
-                  <span className="px-2.5 py-1 bg-primary/10 text-primary-dark font-black text-xs rounded-lg">
-                    {profile.mbti || "MBTI 미상"}
-                  </span>
-                </div>
-
-                {/* Info */}
-                <div>
-                  <h2 className="text-xl font-extrabold text-text-primary mb-1">
-                    {profile.nickname} <span className="font-medium text-text-muted text-base ml-1">{profile.age}세</span>
-                  </h2>
-                  <p className="text-sm font-medium text-text-secondary bg-surface p-3 rounded-xl">
-                    "{profile.bio || "앗, 소개글을 적지 않은 분이에요!"}"
-                  </p>
-                </div>
-
-                {/* Sub info */}
-                <div className="space-y-2 pt-2 border-t border-border-default">
-                  <div className="text-xs font-semibold text-text-muted">지하철 루틴</div>
-                  <div className="text-[13px] font-medium text-text-secondary">
-                    {profile.regular_boarding_times && Array.isArray(profile.regular_boarding_times) && profile.regular_boarding_times.length > 0
-                      ? profile.regular_boarding_times.slice(0, 3).join(", ") + (profile.regular_boarding_times.length > 3 ? " 외" : "")
-                      : "🕰️ 유동적인 스케줄의 소유자"}
-                  </div>
-                </div>
-
-                <div className="pt-2">
-                  <Button 
-                    onClick={() => handleActionClick(profile)} 
-                    variant={profile.is_boarding ? "primary" : "outline"} 
-                    className="w-full font-bold shadow-md h-12 text-[15px]"
-                  >
-                    {profile.is_boarding ? "지금 인사 건네기 🎫" : "만남 스케줄 조율하기"}
-                  </Button>
-                </div>
+        
+        {/* ==== TOP SECTION: 실시간 대기 영역 ==== */}
+        <div className="bg-primary/5 border border-primary/20 rounded-2xl p-5 min-h-[200px]">
+          {/* 탐색 중 상태 */}
+          {isSearching ? (
+            <div className="flex flex-col items-center text-center space-y-4">
+              {/* 서칭 아이콘 */}
+              <motion.div 
+                animate={{ scale: [1, 1.1, 1] }} 
+                transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+                className="text-5xl"
+              >
+                🚇
+              </motion.div>
+              <div className="space-y-1">
+                <h2 className="text-base font-bold text-text-primary leading-relaxed">
+                  지금 이 순간, 버튼을 누른<br/>누군가를 기다리는 중이에요
+                </h2>
+                <p className="text-xs text-text-muted font-medium">
+                  같은 시간에 탑승 기다리기를 누른 분이 나타나면 알려드릴게요
+                </p>
               </div>
-            </Card>
-          ))
-        )}
+              {/* 타이머 */}
+              <motion.div 
+                className={cn(
+                  "text-4xl font-extrabold tabular-nums",
+                  timeLeft < 60 ? "text-[#E8A84C]" : "text-primary"
+                )}
+                animate={timeLeft < 10 ? { x: [-2, 2, -2, 2, 0] } : {}}
+                transition={{ duration: 0.4, repeat: timeLeft < 10 ? Infinity : 0, repeatDelay: 0.6 }}
+              >
+                {formatTime(timeLeft)}
+              </motion.div>
+            </div>
+          ) : (
+            /* 탐색 종료 */
+            <div className="flex flex-col items-center text-center space-y-3 py-4">
+              {realtimeMatches.length === 0 ? (
+                <>
+                  <span className="text-4xl">😊</span>
+                  <h2 className="text-base font-bold text-text-primary">이번엔 타이밍이 안 맞았어요</h2>
+                  <p className="text-sm text-text-muted font-medium">아래 오늘 탑승하신 분들께 먼저 말을 걸어보세요!</p>
+                </>
+              ) : (
+                <>
+                  <span className="text-4xl">🎉</span>
+                  <h2 className="text-base font-bold text-text-primary">인연을 찾았어요!</h2>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* 실시간 매칭 카드 */}
+          {realtimeMatches.length > 0 && (
+            <div className="mt-5 space-y-4">
+              {realtimeMatches.map(profile => renderMatchCard(profile, true))}
+            </div>
+          )}
+        </div>
+
+        {/* ==== 구분선 ==== */}
+        <div className="flex items-center gap-3 py-2">
+          <div className="flex-1 h-px bg-border-default" />
+          <span className="text-xs text-text-muted font-medium whitespace-nowrap">오늘 탑승했던 분들이에요</span>
+          <div className="flex-1 h-px bg-border-default" />
+        </div>
+
+        {/* ==== BOTTOM SECTION: 오늘의 탑승자 ==== */}
+        <div className="space-y-4">
+          {todayMatches.length === 0 ? (
+            <div className="flex flex-col items-center justify-center text-center space-y-4 opacity-70 py-10">
+              <span className="text-5xl">🕳️</span>
+              <div>
+                <p className="font-bold text-base text-text-primary">아직 오늘 탑승한 인연이 없네요.</p>
+              </div>
+              <p className="text-sm text-text-muted">조금 뒤에 다시 새로고침을 돌려보세요!</p>
+            </div>
+          ) : (
+            todayMatches.map(profile => renderMatchCard(profile, false))
+          )}
+        </div>
       </main>
 
-      {/* Bottom Navigation */}
+      {/* 하단 네비게이션 */}
       <BottomNav />
 
-      {/* Action BottomSheet */}
+      {/* ==== 액션 BottomSheet ==== */}
       <AnimatePresence>
         {isSheetOpen && selectedTarget && (
           <>
@@ -310,7 +547,7 @@ export default function MatchPage() {
                       </div>
                     </div>
                     
-                    {/* 시간 선택 */}
+                    {/* 시간대 선택 */}
                     <div className="space-y-3">
                       <div className="font-bold text-sm text-text-primary px-1 mb-2">시간대 선택 (다중)</div>
                       {Object.entries(timeSlots).map(([label, slots]) => (
@@ -334,7 +571,7 @@ export default function MatchPage() {
                 )}
                 
                 {/* 겹침 프리뷰 배너 */}
-                {!selectedTarget.is_boarding && selectedTarget.regular_boarding_times && selectedTarget.regular_boarding_times.length > 0 && selectedTimes.some(t => selectedTarget.regular_boarding_times.includes(t)) && (
+                {!selectedTarget.is_boarding && selectedTarget.regular_boarding_times && Array.isArray(selectedTarget.regular_boarding_times) && selectedTarget.regular_boarding_times.length > 0 && selectedTimes.some(t => selectedTarget.regular_boarding_times.includes(t)) && (
                   <div className="p-3 bg-green-50 rounded-xl border border-green-200">
                     <p className="text-xs font-bold text-green-700 text-center">💡 앗! 상대방도 선택하신 시간대에 보통 탑승한대요!</p>
                   </div>
