@@ -1,11 +1,12 @@
-// 서버 구동 시 강제로 환경변수 누락 여부를 런타임에 체크합니다.
-if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
-  throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY in .env.local!");
-}
-
+// 환경변수를 런타임(API 호출 시점)에 안전하게 가져옵니다.
+// 빌드 시점에는 환경변수가 없을 수 있으므로 즉시 throw하지 않습니다.
 export const env = {
-  SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
-  TOSS_SECRET_KEY: process.env.TOSS_PAYMENTS_SECRET_KEY || "", // From env file
-  // CRON_SECRET is optional if you don't use vercel cron 
-  // CRON_SECRET: process.env.CRON_SECRET || "",
+  get SUPABASE_SERVICE_ROLE_KEY(): string {
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (!key) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY!");
+    return key;
+  },
+  get TOSS_SECRET_KEY(): string {
+    return process.env.TOSS_PAYMENTS_SECRET_KEY || "";
+  },
 };
