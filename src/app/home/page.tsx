@@ -7,20 +7,7 @@ import { toast } from "sonner";
 import { BottomNav } from "@/components/layout/BottomNav";
 import { TicketIcon } from "@/components/ui/TicketIcon";
 import { useRouter } from "next/navigation";
-import { cn } from "@/lib/utils";
 
-const lines = [
-  { id: "1호선", color: "bg-[#0052A4]" },
-  { id: "2호선", color: "bg-[#009D3E]" },
-  { id: "3호선", color: "bg-[#EF7C1C]" },
-  { id: "4호선", color: "bg-[#00A5DE]" },
-  { id: "5호선", color: "bg-[#996CAC]" },
-  { id: "6호선", color: "bg-[#CD7C2F]" },
-  { id: "7호선", color: "bg-[#747F00]" },
-  { id: "8호선", color: "bg-[#E6186C]" },
-  { id: "9호선", color: "bg-[#BDB092]" },
-  { id: "신분당", color: "bg-[#D4003B]" },
-];
 
 export default function HomePage() {
   const supabase = createClient();
@@ -29,8 +16,7 @@ export default function HomePage() {
   const [ticketCount, setTicketCount] = useState<number>(0);
   const [isCurrentlyBoarding, setIsCurrentlyBoarding] = useState(false);
   const [isWaitingSubway, setIsWaitingSubway] = useState(false);
-  const [selectedLine, setSelectedLine] = useState<string>("2호선");
-  const [currentBoardingLine, setCurrentBoardingLine] = useState<string>("");
+
   const [totalBoardingCount, setTotalBoardingCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -54,7 +40,7 @@ export default function HomePage() {
       // 현재 탑승 상태 확인 (가장 최근 기록)
       const { data: boarding } = await supabase
         .from('boarding_status')
-        .select('is_boarding, line')
+        .select('is_boarding')
         .eq('user_id', user.id)
         .order('boarded_at', { ascending: false })
         .limit(1)
@@ -62,8 +48,6 @@ export default function HomePage() {
 
       if (boarding && boarding.is_boarding) {
         setIsCurrentlyBoarding(true);
-        setCurrentBoardingLine(boarding.line);
-        setSelectedLine(boarding.line);
       }
 
       // 오늘 탑승 인원 수
@@ -114,7 +98,7 @@ export default function HomePage() {
       .insert({
         user_id: user.id,
         is_boarding: true,
-        line: selectedLine,
+        line: '',
         boarded_at: new Date().toISOString()
       });
 
@@ -141,7 +125,6 @@ export default function HomePage() {
       .eq('is_boarding', true);
 
     setIsCurrentlyBoarding(false);
-    setCurrentBoardingLine("");
     toast.success("다음에 또 만나요! 👋");
   };
 
@@ -173,7 +156,7 @@ export default function HomePage() {
               </div>
             </div>
             <div className="text-center">
-               <h2 className="text-2xl font-extrabold text-text-primary animate-pulse">지하철 기다리는 중...</h2>
+               <h2 className="text-2xl font-extrabold text-text-primary animate-pulse">탑승을 기다리는 중...</h2>
                <p className="text-text-secondary font-semibold mt-2">나의 운명을 만날 준비를 하고 있어요</p>
             </div>
           </motion.div>
@@ -187,7 +170,7 @@ export default function HomePage() {
               <div className="absolute w-full h-full rounded-full border-4 border-dashed border-green-400/60 animate-[spin_10s_linear_infinite]" />
               <div className="w-44 h-44 rounded-full bg-gradient-to-tr from-green-500 to-green-400 shadow-xl flex flex-col items-center justify-center text-white">
                 <span className="text-4xl mb-1">🚇</span>
-                <span className="font-extrabold text-sm">{currentBoardingLine} 탑승 중</span>
+                <span className="font-extrabold text-sm">탑승 중이에요</span>
                 <span className="text-xs font-semibold opacity-80 mt-1">매칭 보러 가기 →</span>
               </div>
             </button>
@@ -197,7 +180,7 @@ export default function HomePage() {
               onClick={handleBoardEnd}
               className="px-6 py-3 rounded-full bg-white border-2 border-red-300 text-red-500 font-bold text-sm hover:bg-red-50 transition active:scale-95"
             >
-              🚪 탑승 종료하기
+              🚪 탑승 끝내기
             </button>
 
             {/* 실시간 탑승 카운트 */}
@@ -224,27 +207,11 @@ export default function HomePage() {
               <div className="absolute w-full h-full rounded-full border-4 border-dashed border-primary/40 animate-[spin_10s_linear_infinite]" />
               <div className="w-44 h-44 rounded-full bg-white shadow-xl flex flex-col items-center justify-center text-primary border-2 border-border-default group-hover:border-primary transition-colors">
                 <span className="text-5xl mb-2 grayscale opacity-80 group-hover:grayscale-0 group-hover:opacity-100 transition-all">🚇</span>
-                <span className="font-extrabold text-[17px]">탑승 시작하기</span>
+                <span className="font-extrabold text-[17px]">탑승 기다리기</span>
               </div>
             </button>
 
-            {/* 호선 선택 */}
-            <div className="flex flex-wrap justify-center gap-2 px-8 max-w-sm">
-              {lines.map(line => (
-                <button
-                  key={line.id}
-                  onClick={() => setSelectedLine(line.id)}
-                  className={cn(
-                    "px-3 py-1.5 rounded-full text-xs font-bold transition-all border",
-                    selectedLine === line.id
-                      ? `${line.color} text-white border-transparent shadow-md scale-110`
-                      : "bg-white text-text-secondary border-border-default hover:border-primary/30"
-                  )}
-                >
-                  {line.id}
-                </button>
-              ))}
-            </div>
+
 
             {/* 실시간 탑승 카운트 */}
             <div className="flex flex-col items-center bg-white border border-border-default px-6 py-4 rounded-2xl shadow-[0_2px_10px_rgba(0,0,0,0.03)] mt-4">

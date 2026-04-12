@@ -20,7 +20,7 @@ type MatchProfile = {
   quiz_answers: Record<string, string>;
   regular_boarding_times: string[];
   is_boarding: boolean;
-  line: string;
+  line?: string;
 };
 
 // 시간대 양식 재활용
@@ -214,7 +214,7 @@ export default function MatchPage() {
                 <div className="flex items-center justify-between">
                   {profile.is_boarding ? (
                     <span className="px-3 py-1 bg-green-100 text-green-700 text-xs font-black rounded-full animate-pulse border border-green-200">
-                      🟢 {profile.line} 탑승 중
+                      🟢 탑승 중
                     </span>
                   ) : (
                     <span className="px-3 py-1 bg-surface text-text-secondary text-xs font-bold rounded-full border border-border-default">
