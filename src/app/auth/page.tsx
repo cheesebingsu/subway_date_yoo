@@ -13,18 +13,11 @@ export default function AuthPage() {
   const handleKakaoLogin = async () => {
     setIsLoading(true);
     try {
-      // CSRF 방어용 난수 state 발급
-      const randomState = Math.random().toString(36).substring(2, 15);
-      document.cookie = `oauth_state=${randomState}; path=/; max-age=300; secure; samesite=lax`;
-
       const { error } = await supabase.auth.signInWithOAuth({
         provider: "kakao",
         options: {
           scopes: "profile_nickname profile_image",
-          redirectTo: `${location.origin}/auth/callback?state=${randomState}`,
-          queryParams: {
-            state: randomState,
-          }
+          redirectTo: `${location.origin}/auth/callback`,
         },
       });
       if (error) throw error;
