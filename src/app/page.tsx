@@ -27,12 +27,14 @@ export default function HomePage() {
   const router = useRouter();
   
   const [ticketCount, setTicketCount] = useState<number>(0);
-  const [isWaitingSubway, setIsWaitingSubway] = useState<boolean>(false);
+  const [isCurrentlyBoarding, setIsCurrentlyBoarding] = useState(false);
+  const [isWaitingSubway, setIsWaitingSubway] = useState(false);
   const [selectedLine, setSelectedLine] = useState<string>("2호선");
+  const [currentBoardingLine, setCurrentBoardingLine] = useState<string>("");
   const [totalBoardingCount, setTotalBoardingCount] = useState<number>(0);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Fetch initial data
+  // 초기 데이터 로드
   useEffect(() => {
     async function loadData() {
       const { data: { user } } = await supabase.auth.getUser();
@@ -41,7 +43,7 @@ export default function HomePage() {
         return;
       }
 
-      // Fetch tickets
+      // 티켓 조회
       const { data: tickets } = await supabase
         .from('tickets')
         .select('amount')
@@ -49,7 +51,7 @@ export default function HomePage() {
         .single();
       if (tickets) setTicketCount(tickets.amount);
 
-      // Fetch personal boarding status
+      // 현재 탑승 상태 확인 (가장 최근 기록)
       const { data: boarding } = await supabase
         .from('boarding_status')
         .select('is_boarding, line')
@@ -59,10 +61,12 @@ export default function HomePage() {
         .single();
 
       if (boarding && boarding.is_boarding) {
+        setIsCurrentlyBoarding(true);
+        setCurrentBoardingLine(boarding.line);
         setSelectedLine(boarding.line);
       }
 
-      // Initial total boarding count (today)
+      // 오늘 탑승 인원 수
       const today = new Date().toISOString().split("T")[0];
       const { count } = await supabase
         .from('boarding_status')
@@ -75,11 +79,10 @@ export default function HomePage() {
     loadData();
   }, [supabase, router]);
 
-  // Realtime subscription for total boarding count
+  // 실시간 탑승 카운트 구독
   useEffect(() => {
     const channel = supabase.channel('boarding-count')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'boarding_status' }, () => {
-        // Re-fetch today count when new boarding starts
         const today = new Date().toISOString().split("T")[0];
         supabase.from('boarding_status').select('*', { count: 'exact', head: true }).gte('boarded_at', `${today}T00:00:00.000Z`)
           .then(({ count }) => setTotalBoardingCount(count || 0));
@@ -91,22 +94,27 @@ export default function HomePage() {
     };
   }, [supabase]);
 
-  const handleBoardToggle = async () => {
+  // 탑승 시작 처리
+  const handleBoardStart = async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
 
-    // 로딩 화면 전환
+    // 로딩 화면으로 전환
     setIsWaitingSubway(true);
 
-    // 하차 상태 모두 탑승 종료 처리 후 새로 탑승
-    await supabase.from('boarding_status').update({ is_boarding: false, alighted_at: new Date().toISOString() }).eq('user_id', user.id).eq('is_boarding', true);
+    // 기존 탑승 기록 종료 처리
+    await supabase.from('boarding_status')
+      .update({ is_boarding: false, alighted_at: new Date().toISOString() })
+      .eq('user_id', user.id)
+      .eq('is_boarding', true);
 
+    // 새로운 탑승 기록 생성
     const { error } = await supabase
       .from('boarding_status')
       .insert({
         user_id: user.id,
         is_boarding: true,
-        line: selectedLine, // 기본값 2호선
+        line: selectedLine,
         boarded_at: new Date().toISOString()
       });
 
@@ -122,11 +130,26 @@ export default function HomePage() {
     }, 3000);
   };
 
+  // 하차 처리
+  const handleBoardEnd = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
+    await supabase.from('boarding_status')
+      .update({ is_boarding: false, alighted_at: new Date().toISOString() })
+      .eq('user_id', user.id)
+      .eq('is_boarding', true);
+
+    setIsCurrentlyBoarding(false);
+    setCurrentBoardingLine("");
+    toast.success("다음에 또 만나요! 👋");
+  };
+
   if (isLoading) return <div className="min-h-screen bg-base" />;
 
   return (
     <div className="relative flex flex-col h-screen bg-base">
-      {/* Header */}
+      {/* 헤더 */}
       <header className="flex items-center justify-between px-6 py-4 bg-white/70 backdrop-blur-md z-40">
         <h1 className="text-xl font-bold bg-gradient-to-r from-primary to-primary-dark bg-clip-text text-transparent">
           설레철
@@ -137,9 +160,10 @@ export default function HomePage() {
         </div>
       </header>
 
-      {/* Main Area */}
+      {/* 메인 영역 */}
       <main className="flex-1 flex flex-col items-center justify-center -mt-10 overflow-y-auto pb-24">
         
+        {/* 로딩 화면 (탑승 시작 후 3초간) */}
         {isWaitingSubway ? (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center justify-center w-full h-full space-y-8">
             <div className="relative flex items-center justify-center w-48 h-48">
@@ -153,20 +177,31 @@ export default function HomePage() {
                <p className="text-text-secondary font-semibold mt-2">나의 운명을 만날 준비를 하고 있어요</p>
             </div>
           </motion.div>
-        ) : (
-          <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center w-full space-y-10">
+
+        ) : isCurrentlyBoarding ? (
+          /* 현재 탑승 중일 때 */
+          <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center w-full space-y-8">
             
-            {/* Inactive Big Button */}
-            <button onClick={handleBoardToggle} className="group relative flex items-center justify-center w-56 h-56 transition-transform active:scale-95 z-10 mt-6">
-              <div className="absolute w-full h-full rounded-full border-4 border-dashed border-primary/40 animate-[spin_10s_linear_infinite]" />
-              <div className="w-44 h-44 rounded-full bg-white shadow-xl flex flex-col items-center justify-center text-primary border-2 border-border-default group-hover:border-primary transition-colors">
-                <span className="text-5xl mb-2 grayscale opacity-80 group-hover:grayscale-0 group-hover:opacity-100 transition-all">🚇</span>
-                <span className="font-extrabold text-[17px]">탑승 시작하기</span>
+            {/* 탑승 중 큰 버튼 */}
+            <button onClick={() => router.push('/match')} className="group relative flex items-center justify-center w-56 h-56 transition-transform active:scale-95 z-10 mt-6">
+              <div className="absolute w-full h-full rounded-full border-4 border-dashed border-green-400/60 animate-[spin_10s_linear_infinite]" />
+              <div className="w-44 h-44 rounded-full bg-gradient-to-tr from-green-500 to-green-400 shadow-xl flex flex-col items-center justify-center text-white">
+                <span className="text-4xl mb-1">🚇</span>
+                <span className="font-extrabold text-sm">{currentBoardingLine} 탑승 중</span>
+                <span className="text-xs font-semibold opacity-80 mt-1">매칭 보러 가기 →</span>
               </div>
             </button>
 
-            {/* Live Count */}
-            <div className="flex flex-col items-center bg-white border border-border-default px-6 py-4 rounded-2xl shadow-[0_2px_10px_rgba(0,0,0,0.03)] mt-8">
+            {/* 하차 버튼 */}
+            <button 
+              onClick={handleBoardEnd}
+              className="px-6 py-3 rounded-full bg-white border-2 border-red-300 text-red-500 font-bold text-sm hover:bg-red-50 transition active:scale-95"
+            >
+              🚪 탑승 종료하기
+            </button>
+
+            {/* 실시간 탑승 카운트 */}
+            <div className="flex flex-col items-center bg-white border border-border-default px-6 py-4 rounded-2xl shadow-[0_2px_10px_rgba(0,0,0,0.03)]">
               <span className="text-sm font-semibold text-text-secondary mb-1">오늘 하루, 대중교통 안에서</span>
               <div className="flex items-center gap-2">
                 <span className="relative flex h-3 w-3">
@@ -178,19 +213,59 @@ export default function HomePage() {
                 </p>
               </div>
             </div>
+          </motion.div>
 
+        ) : (
+          /* 미탑승 상태 */
+          <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="flex flex-col items-center w-full space-y-8">
+            
+            {/* 탑승 시작 버튼 */}
+            <button onClick={handleBoardStart} className="group relative flex items-center justify-center w-56 h-56 transition-transform active:scale-95 z-10 mt-6">
+              <div className="absolute w-full h-full rounded-full border-4 border-dashed border-primary/40 animate-[spin_10s_linear_infinite]" />
+              <div className="w-44 h-44 rounded-full bg-white shadow-xl flex flex-col items-center justify-center text-primary border-2 border-border-default group-hover:border-primary transition-colors">
+                <span className="text-5xl mb-2 grayscale opacity-80 group-hover:grayscale-0 group-hover:opacity-100 transition-all">🚇</span>
+                <span className="font-extrabold text-[17px]">탑승 시작하기</span>
+              </div>
+            </button>
+
+            {/* 호선 선택 */}
+            <div className="flex flex-wrap justify-center gap-2 px-8 max-w-sm">
+              {lines.map(line => (
+                <button
+                  key={line.id}
+                  onClick={() => setSelectedLine(line.id)}
+                  className={cn(
+                    "px-3 py-1.5 rounded-full text-xs font-bold transition-all border",
+                    selectedLine === line.id
+                      ? `${line.color} text-white border-transparent shadow-md scale-110`
+                      : "bg-white text-text-secondary border-border-default hover:border-primary/30"
+                  )}
+                >
+                  {line.id}
+                </button>
+              ))}
+            </div>
+
+            {/* 실시간 탑승 카운트 */}
+            <div className="flex flex-col items-center bg-white border border-border-default px-6 py-4 rounded-2xl shadow-[0_2px_10px_rgba(0,0,0,0.03)] mt-4">
+              <span className="text-sm font-semibold text-text-secondary mb-1">오늘 하루, 대중교통 안에서</span>
+              <div className="flex items-center gap-2">
+                <span className="relative flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                </span>
+                <p className="text-lg font-bold text-text-primary">
+                  <span className="text-primary text-xl font-extrabold mr-1">{totalBoardingCount}</span>명이 설레는 중
+                </p>
+              </div>
+            </div>
           </motion.div>
         )}
 
       </main>
 
-      {/* Bottom Navigation */}
+      {/* 하단 네비게이션 */}
       <BottomNav />
-      {/* 
-        Tailwind class for hide-scrollbar (requires custom css if not built-in, 
-        fallback applied via tailwind utilities inside global css usually.
-        We'll just add inline style below or let browser default if scrollbar shows slightly 
-      */}
       <style dangerouslySetInnerHTML={{__html: `
         .hide-scrollbar::-webkit-scrollbar { display: none; }
         .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

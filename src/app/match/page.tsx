@@ -82,31 +82,42 @@ export default function MatchPage() {
 
   const fetchCandidates = async (userId: string, minAge: number, maxAge: number) => {
     setIsLoading(true);
-    const { data: rpcData, error } = await supabase.rpc('get_match_candidates', {
-      caller_id: userId,
-      pref_min: minAge,
-      pref_max: maxAge
-    });
-    
-    if (!error && rpcData) {
-      setMatches(rpcData as MatchProfile[]);
+    try {
+      const { data: rpcData, error } = await supabase.rpc('get_match_candidates', {
+        caller_id: userId,
+        pref_min: minAge,
+        pref_max: maxAge
+      });
+      
+      if (error) {
+        console.error('RPC error:', error);
+        toast.error("매칭 후보를 불러오는 데 실패했습니다.");
+        setMatches([]);
+      } else {
+        setMatches((rpcData || []) as MatchProfile[]);
+      }
+    } catch (err) {
+      console.error('Match fetch error:', err);
+      toast.error("서버 연결에 문제가 있어요. 잠시 후 다시 시도해주세요.");
+      setMatches([]);
     }
     setIsLoading(false);
   };
 
   const handleRefresh = async () => {
     if (!myProfile) return;
-    if (myProfile.refresh_count >= 3) {
+    const safeRefreshCount = myProfile.refresh_count ?? 0;
+    if (safeRefreshCount >= 3) {
       toast.error("오늘의 새로고침 횟수(3회)를 모두 사용했습니다.");
       return;
     }
     
     // Refresh 카운트 증가
-    await supabase.from('profiles').update({ refresh_count: myProfile.refresh_count + 1 }).eq('id', currentUser.id);
-    setMyProfile({ ...myProfile, refresh_count: myProfile.refresh_count + 1 });
+    await supabase.from('profiles').update({ refresh_count: safeRefreshCount + 1 }).eq('id', currentUser.id);
+    setMyProfile({ ...myProfile, refresh_count: safeRefreshCount + 1 });
     
-    toast.success(`새로운 운명을 찾습니다! (남은 횟수: ${2 - myProfile.refresh_count}회)`);
-    fetchCandidates(currentUser.id, myProfile.preferred_age_min, myProfile.preferred_age_max);
+    toast.success(`새로운 운명을 찾습니다! (남은 횟수: ${2 - safeRefreshCount}회)`);
+    fetchCandidates(currentUser.id, myProfile.preferred_age_min || 18, myProfile.preferred_age_max || 45);
   };
 
   const handleActionClick = (target: MatchProfile) => {
@@ -154,10 +165,12 @@ export default function MatchPage() {
 
       if (error) throw error;
 
-      toast.success(`${selectedTarget.nickname}님에게 요청을 보냈습니다!`);
+      toast.success(`${selectedTarget.nickname}님에게 요청을 보냈습니다!`, {
+        action: { label: "신청 현황 보기", onClick: () => router.push('/chat') }
+      });
       setIsSheetOpen(false);
       
-      // 목록에서 제외 (간단한 처리)
+      // 목록에서 제외
       setMatches(prev => prev.filter(m => m.id !== selectedTarget.id));
     } catch (err) {
       toast.error("요청 전송 중 오류가 발생했습니다.");
@@ -178,7 +191,7 @@ export default function MatchPage() {
           onClick={handleRefresh}
           className="flex items-center gap-1 text-sm font-bold text-primary bg-primary/10 px-3 py-1.5 rounded-full active:scale-95 transition"
         >
-          🔄 새로고침 ({3 - (myProfile?.refresh_count || 0)}/3)
+          🔄 새로고침 ({3 - (myProfile?.refresh_count ?? 0)}/3)
         </button>
       </header>
 
@@ -227,7 +240,7 @@ export default function MatchPage() {
                 <div className="space-y-2 pt-2 border-t border-border-default">
                   <div className="text-xs font-semibold text-text-muted">지하철 루틴</div>
                   <div className="text-[13px] font-medium text-text-secondary">
-                    {profile.regular_boarding_times && profile.regular_boarding_times.length > 0
+                    {profile.regular_boarding_times && Array.isArray(profile.regular_boarding_times) && profile.regular_boarding_times.length > 0
                       ? profile.regular_boarding_times.slice(0, 3).join(", ") + (profile.regular_boarding_times.length > 3 ? " 외" : "")
                       : "🕰️ 유동적인 스케줄의 소유자"}
                   </div>
