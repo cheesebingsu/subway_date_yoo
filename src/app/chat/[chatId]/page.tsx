@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import { motion, AnimatePresence } from "framer-motion";
 import { TicketStoreDrawer } from "@/components/ui/TicketStoreDrawer";
 import { Button } from "@/components/ui/Button";
+import { TicketIcon } from "@/components/ui/TicketIcon";
+import { cn } from "@/lib/utils";
 
 type Message = { id: string; sender_id: string; content: string; created_at: string };
 type ChatOptions = { 
@@ -213,7 +215,7 @@ export default function ChatRoomPage() {
           </div>
           {chatInfo.opponent.is_boarding ? (
             <span className="text-green-600 text-xs font-bold flex items-center gap-1">
-              <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" /> {chatInfo.opponent.line} 탑승 중
+              <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse" /> 탑승 중
             </span>
           ) : (
              <span className="text-text-muted text-xs font-semibold">지하철 하차 완료</span>
