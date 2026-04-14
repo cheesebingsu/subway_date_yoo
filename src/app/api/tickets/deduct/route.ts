@@ -33,13 +33,29 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Not enough tickets" }, { status: 400 });
     }
 
+    // 이미 두 사람 사이의 active 채팅방이 있는지 확인 (중복 방지)
+    const { data: existingChat } = await adminClient
+      .from('chats')
+      .select('id')
+      .or(
+        `and(user_a.eq.${req.requester_id},user_b.eq.${req.target_id}),` +
+        `and(user_a.eq.${req.target_id},user_b.eq.${req.requester_id})`
+      )
+      .eq('status', 'active')
+      .maybeSingle();
+
+    if (existingChat) {
+      // 이미 채팅방이 있으면 기존 ID 반환 (ticket 차감/상태 변경은 이미 위에서 완료)
+      return NextResponse.json({ success: true, chatId: existingChat.id });
+    }
+
     // Update Request status to accepted / connected
     await adminClient.from('chat_requests').update({ status: 'connected' }).eq('id', requestId);
 
     // Deduct 1 ticket
     await adminClient.from('tickets').update({ amount: t.amount - 1 }).eq('user_id', user.id);
 
-    // Insert Chat using admin bypass
+    // 새 채팅방 생성
     const { data: newChat, error: chatErr } = await adminClient.from('chats').insert({
        user_a: req.requester_id,
        user_b: req.target_id,

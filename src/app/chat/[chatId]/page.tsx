@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { toast } from "sonner";
@@ -44,13 +44,13 @@ export default function ChatRoomPage() {
       if (!user) return router.push("/auth");
       setCurrentUser(user);
 
-      // fetch chat info
+      // 채팅 정보 로드
       const { data: chat } = await supabase.from("chats").select("*").eq("id", chatId).single();
       if (!chat) return router.push("/");
       
       const opponentId = chat.user_a === user.id ? chat.user_b : chat.user_a;
       
-      // fetch opponent profile & boarding status
+      // 상대방 프로필 & 탑승 상태
       const { data: opponent } = await supabase.from("profiles").select("*").eq("id", opponentId).single();
       const { data: opBoarding } = await supabase.from("boarding_status").select("*").eq("user_id", opponentId).order("boarded_at", { ascending: false }).limit(1).single();
 
@@ -62,7 +62,6 @@ export default function ChatRoomPage() {
       });
 
       if (chat.status === 'kakao_exchanged') {
-         // Fetch revealed kakao ID from secure API
          const rev = await fetch('/api/kakao/reveal', {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
@@ -74,38 +73,58 @@ export default function ChatRoomPage() {
          }
       }
 
-      // fetch messages
+      // 메시지 로드
       const { data: msgs } = await supabase.from("messages").select("*").eq("chat_id", chatId).order("created_at", { ascending: true });
       if (msgs) {
         setMessages(msgs);
-        // Mark opponent messages as read
         await supabase.from("messages").update({ is_read: true }).eq("chat_id", chatId).neq("sender_id", user.id).eq("is_read", false);
       }
 
-      // fetch daily question
+      // 오늘의 질문
       const { data: dq } = await supabase.from("daily_questions").select("question").eq("ask_date", new Date().toISOString().split("T")[0]).single();
       if (dq) setDailyQuestion(dq.question);
 
-      // fetch my tickets
+      // 내 티켓
       const { data: tData } = await supabase.from("tickets").select("amount").eq("user_id", user.id).single();
       if (tData) setMyTickets(tData.amount);
 
-      // Realtime subscription for messages
-      const channel = supabase.channel(`chat_${chatId}`)
-        .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `chat_id=eq.${chatId}` }, (payload) => {
-          setMessages(prev => [...prev, payload.new as Message]);
-          setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
-        })
-        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "chats", filter: `id=eq.${chatId}` }, (payload) => {
-          setChatInfo(prev => prev ? { ...prev, status: payload.new.status } : null);
-        })
-        .subscribe();
-
       setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: "auto" }), 200);
-
-      return () => { supabase.removeChannel(channel); };
     }
     loadChat();
+  }, [chatId]);
+
+  // Realtime 구독 — 데이터 로딩과 완전히 분리 (cleanup이 제대로 등록되도록)
+  useEffect(() => {
+    // 새 메시지 수신
+    const channel = supabase.channel(`chat_${chatId}`)
+      .on("postgres_changes", {
+        event: "INSERT",
+        schema: "public",
+        table: "messages",
+        filter: `chat_id=eq.${chatId}`
+      }, (payload) => {
+        setMessages(prev => {
+          // 이미 있으면 중복 추가 방지
+          if (prev.some(m => m.id === (payload.new as Message).id)) return prev;
+          return [...prev, payload.new as Message];
+        });
+        setTimeout(() => scrollRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+      })
+      // 채팅 상태 변경 수신 (kakao_exchanged, ended 등)
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "chats",
+        filter: `id=eq.${chatId}`
+      }, (payload) => {
+        setChatInfo(prev => prev ? { ...prev, status: payload.new.status } : null);
+      })
+      .subscribe();
+
+    // ✅ 여기서 return하는 cleanup이 진짜 useEffect cleanup으로 등록됨
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [chatId]);
 
   // Timer checking logic (Winding Down)
